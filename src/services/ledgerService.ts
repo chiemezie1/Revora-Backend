@@ -1,9 +1,9 @@
-import { createHmac, createHash } from 'crypto';
+import { createHmac, createHash, timingSafeEqual } from 'crypto';
 import { Pool, PoolClient } from 'pg';
-import { LedgerPeriodLockRepository, LedgerPeriodLock } from '../db/repositories/ledgerPeriodLockRepository';
+import { LedgerPeriodLockRepository } from '../db/repositories/ledgerPeriodLockRepository';
 import { Errors } from '../lib/errors';
 import { Logger, LogLevel } from '../lib/logger';
-import { withTransaction, TransactionOptions } from '../db/transaction';
+import { withTransaction } from '../db/transaction';
 
 /**
  * Journal entry as materialized for export
@@ -16,6 +16,16 @@ export interface JournalEntryExport {
   issuer_id: string;
   reported_at: string; // ISO 8601
   created_at: string; // ISO 8601
+}
+
+interface JournalEntryRow {
+  id: string;
+  offering_id: string;
+  period_id: string;
+  amount: string;
+  issuer_id: string;
+  reported_at: Date;
+  created_at: Date;
 }
 
 /**
@@ -359,7 +369,7 @@ export class LedgerService {
       dateParam = `${periodId}-01`;
     }
 
-    const result = await client.query<any>(query, [
+    const result = await client.query<JournalEntryRow>(query, [
       offeringId,
       periodId,
       dateParam,
@@ -429,12 +439,20 @@ export class LedgerService {
    */
   verifyExportSignature(exportHash: string, signature: string): boolean {
     const expectedSignature = this.signExportHash(exportHash);
+
     // Timing-safe comparison to prevent timing attacks
     try {
-      return (
-        Buffer.from(expectedSignature).toString('hex') ===
-        Buffer.from(signature).toString('hex')
-      );
+      if (!/^[a-f0-9]{64}$/i.test(signature)) {
+        return false;
+      }
+
+      const expected = Buffer.from(expectedSignature, 'hex');
+      const claimed = Buffer.from(signature, 'hex');
+      if (expected.length !== claimed.length) {
+        return false;
+      }
+
+      return timingSafeEqual(expected, claimed);
     } catch {
       return false;
     }
